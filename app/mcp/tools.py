@@ -1,10 +1,10 @@
 """
 Arkon MCP Tools — Knowledge Base operations exposed to Claude.
 
-All tools respect the employee's knowledge scope:
-  - Token from Authorization header → resolve identity
-  - Apply knowledge type / source ID filters to queries
-  - Employee only sees docs they're allowed to access
+All tools verify the employee's MCP token and enforce their knowledge scope:
+  - Token from Authorization header → MCPAuthService.verify_token()
+  - ResolvedIdentity drives what sources the employee can see
+  - apply_scope_filter() is applied before any source data is returned
 
 Tools:
   - search_knowledge: Semantic search with scope filtering
@@ -20,6 +20,70 @@ from typing import Optional
 from fastmcp import FastMCP, Context
 from loguru import logger
 
+
+# ---------------------------------------------------------------------------
+# Auth helpers (module-level, used by every tool)
+# ---------------------------------------------------------------------------
+
+async def _get_identity():
+    """
+    Extract Bearer token from the current HTTP request and resolve identity.
+    Returns (ResolvedIdentity, None) on success or (None, error_message) on failure.
+    """
+    from fastmcp.server.dependencies import get_http_request
+    from app.database import async_session_factory
+    from app.services.mcp_auth_service import MCPAuthService
+
+    try:
+        request = get_http_request()
+        auth_header = request.headers.get("authorization", "")
+        token = auth_header.removeprefix("Bearer ").strip()
+    except RuntimeError:
+        return None, "No HTTP request context available."
+
+    if not token:
+        return None, (
+            "Authentication required. Configure your MCP token in Claude Desktop:\n"
+            '{"mcpServers": {"arkon": {"url": "...", '
+            '"headers": {"Authorization": "Bearer <your-token>"}}}}'
+        )
+
+    async with async_session_factory() as session:
+        auth_svc = MCPAuthService(session)
+        identity = await auth_svc.verify_token(token)
+        if identity is None:
+            return None, "Invalid or inactive MCP token. Contact your administrator."
+        await session.commit()
+
+    return identity, None
+
+
+async def _get_allowed_source_ids(identity) -> Optional[set[str]]:
+    """
+    Return a set of allowed source IDs for the identity, or None if open access.
+    Uses apply_scope_filter() on the sources table.
+    """
+    # Admin or open access: no restriction
+    if identity.is_admin:
+        return None
+    if identity.allowed_source_ids is None and identity.allowed_knowledge_types is None:
+        return None
+
+    from sqlalchemy import select
+    from app.database import async_session_factory
+    from app.database.models import Source
+    from app.services.mcp_auth_service import apply_scope_filter
+
+    async with async_session_factory() as session:
+        stmt = select(Source.id).where(Source.status == "ready")
+        stmt = apply_scope_filter(stmt, identity)
+        result = await session.execute(stmt)
+        return {str(r[0]) for r in result.all()}
+
+
+# ---------------------------------------------------------------------------
+# Tool registration
+# ---------------------------------------------------------------------------
 
 def register_tools(mcp: FastMCP):
     """Register all KB tools on the MCP server."""
@@ -41,30 +105,42 @@ def register_tools(mcp: FastMCP):
             query: The search query (natural language)
             top_k: Maximum number of results to return (default: 5)
             min_similarity: Minimum relevance score 0-1 (default: 0.3)
-            knowledge_type: Filter by type — "sop", "product", "project", "customer", "general"
+            knowledge_type: Filter by type slug (e.g. "sop", "product")
 
         Returns:
             Formatted search results with source titles, content excerpts,
             page numbers, and relevance scores. Cite these sources in
             your answer.
         """
+        identity, err = await _get_identity()
+        if err:
+            return err
+
+        allowed_ids = await _get_allowed_source_ids(identity)
+
         from app.database import async_session_factory
         from app.services.kb_service import search_kb
+
+        # Fetch extra results to compensate for scope filtering
+        fetch_k = top_k if allowed_ids is None else top_k * 4
 
         async with async_session_factory() as session:
             results = await search_kb(
                 session=session,
                 query=query,
-                top_k=top_k,
+                top_k=fetch_k,
                 min_similarity=min_similarity,
             )
 
-        # Filter by knowledge_type slug if specified
+        # Apply scope filter
+        if allowed_ids is not None:
+            results = [r for r in results if str(r.source_id) in allowed_ids]
+
+        # Apply knowledge_type filter if requested
         if knowledge_type:
             from app.database.models import Source, KnowledgeType
             from sqlalchemy import select
             async with async_session_factory() as session:
-                # Resolve slug → id
                 kt_stmt = select(KnowledgeType.id).where(KnowledgeType.slug == knowledge_type)
                 kt_result = await session.execute(kt_stmt)
                 kt_id = kt_result.scalar()
@@ -76,10 +152,11 @@ def register_tools(mcp: FastMCP):
                             type_filtered.append(r)
                     results = type_filtered
 
+        results = results[:top_k]
+
         if not results:
             return "No relevant documents found in the knowledge base for this query."
 
-        # Format results for Claude
         parts = []
         for i, r in enumerate(results, 1):
             source_label = f"**{r.source_title}**" if r.source_title else "Untitled"
@@ -118,23 +195,36 @@ def register_tools(mcp: FastMCP):
         Returns:
             Document title, metadata, knowledge type, and full text content.
         """
-        import uuid
+        import uuid as uuid_mod
         from app.database import async_session_factory
         from app.database.models import Source, SourceInsight
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
+        identity, err = await _get_identity()
+        if err:
+            return err
+
         try:
-            sid = uuid.UUID(source_id)
+            sid = uuid_mod.UUID(source_id)
         except ValueError:
             return f"Invalid source ID: {source_id}"
 
         async with async_session_factory() as session:
-            stmt = select(Source).where(Source.id == sid).options(selectinload(Source.knowledge_type))
+            stmt = (
+                select(Source)
+                .where(Source.id == sid)
+                .options(selectinload(Source.knowledge_type))
+            )
             result = await session.execute(stmt)
             source = result.scalar_one_or_none()
             if not source:
                 return f"Document not found: {source_id}"
+
+            # Scope check
+            allowed_ids = await _get_allowed_source_ids(identity)
+            if allowed_ids is not None and str(sid) not in allowed_ids:
+                return "Access denied: this document is outside your knowledge scope."
 
             stmt2 = select(SourceInsight).where(
                 SourceInsight.source_id == sid,
@@ -143,25 +233,26 @@ def register_tools(mcp: FastMCP):
             result2 = await session.execute(stmt2)
             insight = result2.scalar_one_or_none()
 
-        parts = [f"# {source.title or 'Untitled Document'}"]
-        parts.append(f"\n**Type:** {source.source_type or 'file'}")
-        kt_label = source.knowledge_type.name if source.knowledge_type else "Uncategorized"
-        parts.append(f"**Knowledge Type:** {kt_label}")
-        if source.file_name:
-            parts.append(f"**File:** {source.file_name}")
-        if source.url:
-            parts.append(f"**URL:** {source.url}")
-        parts.append(f"**Status:** {source.status}")
-        parts.append(f"**Added:** {source.created_at.strftime('%Y-%m-%d %H:%M') if source.created_at else 'unknown'}")
+            parts = [f"# {source.title or 'Untitled Document'}"]
+            parts.append(f"\n**Type:** {source.source_type or 'file'}")
+            kt_label = source.knowledge_type.name if source.knowledge_type else "Uncategorized"
+            parts.append(f"**Knowledge Type:** {kt_label}")
+            if source.file_name:
+                parts.append(f"**File:** {source.file_name}")
+            if source.url:
+                parts.append(f"**URL:** {source.url}")
+            parts.append(f"**Status:** {source.status}")
+            if source.created_at:
+                parts.append(f"**Added:** {source.created_at.strftime('%Y-%m-%d %H:%M')}")
 
-        if insight:
-            parts.append(f"\n## Summary\n{insight.content}")
+            if insight:
+                parts.append(f"\n## Summary\n{insight.content}")
 
-        if source.full_text:
-            text = source.full_text[:max_length]
-            if len(source.full_text) > max_length:
-                text += f"\n\n... (truncated, {len(source.full_text) - max_length} more characters)"
-            parts.append(f"\n## Full Content\n{text}")
+            if source.full_text:
+                text = source.full_text[:max_length]
+                if len(source.full_text) > max_length:
+                    text += f"\n\n... (truncated, {len(source.full_text) - max_length} more characters)"
+                parts.append(f"\n## Full Content\n{text}")
 
         return "\n".join(parts)
 
@@ -176,7 +267,7 @@ def register_tools(mcp: FastMCP):
 
         Args:
             status: Filter by status — "ready", "processing", "error", or "all"
-            knowledge_type: Filter by type — "sop", "product", "project", "customer", "general", or None for all
+            knowledge_type: Filter by type slug, or None for all
             limit: Maximum number of sources to return (default: 20)
 
         Returns:
@@ -184,25 +275,33 @@ def register_tools(mcp: FastMCP):
         """
         from app.database import async_session_factory
         from app.database.models import Source, KnowledgeType
+        from app.services.mcp_auth_service import apply_scope_filter
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
+
+        identity, err = await _get_identity()
+        if err:
+            return err
 
         async with async_session_factory() as session:
             stmt = (
                 select(Source)
                 .options(selectinload(Source.knowledge_type))
                 .order_by(Source.created_at.desc())
-                .limit(limit)
             )
             if status != "all":
                 stmt = stmt.where(Source.status == status)
             if knowledge_type:
-                # Resolve slug
                 kt_stmt = select(KnowledgeType.id).where(KnowledgeType.slug == knowledge_type)
                 kt_result = await session.execute(kt_stmt)
                 kt_id = kt_result.scalar()
                 if kt_id:
                     stmt = stmt.where(Source.knowledge_type_id == kt_id)
+
+            # Apply scope filter at SQL level
+            stmt = apply_scope_filter(stmt, identity)
+            stmt = stmt.limit(limit)
+
             result = await session.execute(stmt)
             sources = result.scalars().all()
 
@@ -214,7 +313,6 @@ def register_tools(mcp: FastMCP):
 
         lines = [f"**Knowledge Base — {len(sources)} document(s)**\n"]
 
-        # Group by knowledge type
         from collections import defaultdict
         by_type = defaultdict(list)
         for s in sources:
@@ -240,6 +338,10 @@ def register_tools(mcp: FastMCP):
         Returns:
             Category tree with names and document counts.
         """
+        identity, err = await _get_identity()
+        if err:
+            return err
+
         from app.services.neo4j_service import neo4j_service
 
         if not neo4j_service.available:
@@ -287,15 +389,17 @@ def register_tools(mcp: FastMCP):
         Returns:
             Contact list with names, roles, departments, phone, email.
         """
+        identity, err = await _get_identity()
+        if err:
+            return err
+
         from app.database import async_session_factory
         from app.database.models import Contact, Department
         from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
 
         async with async_session_factory() as session:
             stmt = select(Contact).limit(limit * 3)
             if department:
-                # Filter by department name join
                 stmt = (
                     select(Contact)
                     .join(Department, Contact.department_id == Department.id, isouter=True)
@@ -308,7 +412,6 @@ def register_tools(mcp: FastMCP):
         if not contacts:
             return "No contacts found in the directory."
 
-        # Score and sort by topic relevance
         if topic:
             topic_lower = topic.lower()
             scored = []
@@ -352,6 +455,10 @@ def register_tools(mcp: FastMCP):
         Returns:
             List of documents in this category with summaries.
         """
+        identity, err = await _get_identity()
+        if err:
+            return err
+
         from app.services.neo4j_service import neo4j_service
 
         if not neo4j_service.available:
@@ -366,10 +473,22 @@ def register_tools(mcp: FastMCP):
         if not docs:
             return f"No documents found in category: {category_name}"
 
-        lines = [f"**Documents in '{category_name}'** ({len(docs)} found)\n"]
+        # Apply scope filter: only show docs the employee can access
+        allowed_ids = await _get_allowed_source_ids(identity)
+
+        lines = [f"**Documents in '{category_name}'**\n"]
+        shown = 0
         for doc in docs:
             title = doc.get("title", "Untitled")
             source_id = doc.get("pg_source_id", "")
+            if allowed_ids is not None and source_id not in allowed_ids:
+                continue
             lines.append(f"- **{title}** (ID: `{source_id}`)")
+            shown += 1
+
+        if shown == 0:
+            return f"No accessible documents found in category: {category_name}"
+
+        lines[0] = f"**Documents in '{category_name}'** ({shown} found)\n"
         lines.append(f"\n_Use `get_document(source_id)` to read full content._")
         return "\n".join(lines)

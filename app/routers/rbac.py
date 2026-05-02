@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.database.models import Department, Employee, KnowledgeScope, Role
 from app.services.mcp_auth_service import MCPAuthService
-from app.services.auth_service import get_current_user, require_admin, hash_password
+from app.services.auth_service import get_current_user, require_admin, require_permission, hash_password
 
 router = APIRouter()
 
@@ -107,7 +107,7 @@ async def list_departments(
 async def create_department(
     body: DepartmentCreate,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("departments.manage"),
 ):
     """Create a new department."""
     dept = Department(name=body.name, description=body.description)
@@ -121,7 +121,7 @@ async def update_department(
     dept_id: str,
     body: DepartmentCreate,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("departments.manage"),
 ):
     dept = await db.get(Department, uuid.UUID(dept_id))
     if not dept:
@@ -136,7 +136,7 @@ async def update_department(
 async def delete_department(
     dept_id: str,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("departments.manage"),
 ):
     dept = await db.get(Department, uuid.UUID(dept_id))
     if not dept:
@@ -188,7 +188,7 @@ async def list_employees(
 async def create_employee(
     body: EmployeeCreate,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("employees.manage"),
 ):
     """Create a new employee (admin only)."""
     dept = await db.get(Department, uuid.UUID(body.department_id))
@@ -220,7 +220,7 @@ async def update_employee(
     emp_id: str,
     body: EmployeeCreate,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("employees.manage"),
 ):
     emp = await db.get(Employee, uuid.UUID(emp_id))
     if not emp:
@@ -240,7 +240,7 @@ async def update_employee(
 async def delete_employee(
     emp_id: str,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("employees.manage"),
 ):
     emp = await db.get(Employee, uuid.UUID(emp_id))
     if not emp:
@@ -253,7 +253,7 @@ async def delete_employee(
 async def toggle_employee(
     emp_id: str,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("employees.manage"),
 ):
     """Activate or deactivate an employee."""
     emp = await db.get(Employee, uuid.UUID(emp_id))

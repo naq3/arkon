@@ -18,7 +18,7 @@ from app.config import settings
 from app.database import get_db, async_session_factory
 from app.database.models import Source, SourceChunk, SourceInsight, ChunkImage, Employee
 from app.database.repository import Repository
-from app.services.auth_service import require_admin
+from app.services.auth_service import require_admin, require_permission
 
 router = APIRouter()
 
@@ -221,7 +221,7 @@ async def upload_source(
     knowledge_type_id: Optional[str] = Form(None),
     department_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("kb.upload"),
 ):
     file_data = await file.read()
     repo = Repository(db)
@@ -279,7 +279,7 @@ async def upload_source(
 async def add_url_source(
     req: SourceCreateURL,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("kb.upload"),
 ):
     repo = Repository(db)
     source = Source(
@@ -329,7 +329,7 @@ async def update_source(
     source_id: uuid.UUID,
     body: SourceUpdate,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("kb.manage"),
 ):
     source = await db.get(Source, source_id)
     if not source:
@@ -360,7 +360,7 @@ async def update_source(
 async def reingest_source(
     source_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("kb.manage"),
 ):
     """Re-queue ingestion for a source. Clears existing chunks and re-processes."""
     result = await db.execute(
@@ -417,7 +417,7 @@ async def reingest_source(
 async def delete_source(
     source_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("kb.manage"),
 ):
     repo = Repository(db)
     source = await repo.get_by_id(Source, source_id)

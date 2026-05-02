@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.database.models import Employee, Project, ProjectMember, ProjectSource, Source
-from app.services.auth_service import get_current_user, require_admin
+from app.services.auth_service import get_current_user, require_admin, require_permission
 
 router = APIRouter()
 
@@ -140,7 +140,7 @@ async def list_projects(
 async def create_project(
     body: ProjectCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: Employee = Depends(require_admin),
+    current_user: Employee = require_permission("projects.manage"),
 ):
     project = Project(
         name=body.name,
@@ -158,7 +158,7 @@ async def update_project(
     project_id: str,
     body: ProjectUpdate,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("projects.manage"),
 ):
     project = await _get_project_or_404(db, project_id)
 
@@ -179,7 +179,7 @@ async def update_project(
 async def delete_project(
     project_id: str,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("projects.manage"),
 ):
     project = await _get_project_or_404(db, project_id)
     await db.delete(project)
@@ -225,7 +225,7 @@ async def add_member(
     project_id: str,
     body: AddMemberBody,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("projects.manage"),
 ):
     await _get_project_or_404(db, project_id)
 
@@ -258,7 +258,7 @@ async def remove_member(
     project_id: str,
     employee_id: str,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("projects.manage"),
 ):
     member = await db.get(
         ProjectMember,
@@ -311,7 +311,7 @@ async def add_project_source(
     project_id: str,
     body: AddSourceBody,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("projects.manage"),
 ):
     await _get_project_or_404(db, project_id)
 
@@ -340,7 +340,7 @@ async def remove_project_source(
     project_id: str,
     source_id: str,
     db: AsyncSession = Depends(get_db),
-    _admin: Employee = Depends(require_admin),
+    _user: Employee = require_permission("projects.manage"),
 ):
     ps = await db.get(
         ProjectSource,

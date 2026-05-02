@@ -10,8 +10,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.database.models import Note
+from app.database.models import Note, Employee
 from app.database.repository import Repository
+from app.services.auth_service import get_current_user, require_admin
 
 router = APIRouter()
 
@@ -34,7 +35,7 @@ class NoteResponse(BaseModel):
 
 
 @router.get("/notes", response_model=list[NoteResponse])
-async def list_notes(db: AsyncSession = Depends(get_db)):
+async def list_notes(db: AsyncSession = Depends(get_db), _user: Employee = Depends(get_current_user)):
     repo = Repository(db)
     notes = await repo.get_all(Note, order_by=Note.created_at.desc())
     return [
@@ -49,7 +50,7 @@ async def list_notes(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/notes", response_model=NoteResponse)
-async def create_note(req: NoteCreate, db: AsyncSession = Depends(get_db)):
+async def create_note(req: NoteCreate, db: AsyncSession = Depends(get_db), _admin: Employee = Depends(require_admin)):
     repo = Repository(db)
     note = Note(**req.model_dump())
     note = await repo.create(note)
@@ -62,7 +63,7 @@ async def create_note(req: NoteCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/notes/{note_id}")
-async def delete_note(note_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_note(note_id: uuid.UUID, db: AsyncSession = Depends(get_db), _admin: Employee = Depends(require_admin)):
     repo = Repository(db)
     deleted = await repo.delete_by_id(Note, note_id)
     if not deleted:

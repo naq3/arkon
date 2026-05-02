@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.database.models import Source, Contact, Department, Employee
 from app.database.repository import Repository
+from app.services.auth_service import get_current_user, require_permission
 
 router = APIRouter()
 
@@ -54,7 +55,10 @@ class TestConnectionResult(BaseModel):
 
 
 @router.get("/settings")
-async def get_settings(db: AsyncSession = Depends(get_db)):
+async def get_settings(
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = Depends(get_current_user),
+):
     """Get current app settings (masked sensitive values for UI)."""
     from app.services.config_service import ConfigService
 
@@ -67,6 +71,7 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
 async def update_settings(
     body: SettingsUpdate,
     db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("settings.manage"),
 ):
     """Update config values in database."""
     from app.services.config_service import ConfigService

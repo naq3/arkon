@@ -13,7 +13,6 @@ type SkillSidebarFiltersProps = {
   departments: Department[];
   selectedDepartment: string | null;
   onSelectDepartment: (id: string | null) => void;
-  totalSkills?: number;
 };
 
 export function SkillSidebarFilters({
@@ -23,10 +22,9 @@ export function SkillSidebarFilters({
 }: SkillSidebarFiltersProps) {
 
   return (
-    <div className="w-full flex flex-col gap-5 animate-in fade-in slide-in-from-left-4 duration-700">
+    <div className="w-full flex flex-col gap-4 animate-in fade-in slide-in-from-left-4 duration-700">
       
-
-      {/* 2. Department Filter Card */}
+      {/* 1. Department Filter Card */}
       <div className="bg-card rounded-2xl p-5 border border-border shadow-sahara flex flex-col">
         <div className="flex items-center justify-between mb-4">
           <h4 className="text-sm font-semibold text-foreground tracking-tight flex items-center gap-2">

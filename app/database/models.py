@@ -56,6 +56,14 @@ WORKSPACE_ROLE_HIERARCHY: dict[WorkspaceRole, int] = {
 }
 
 
+class SkillContributionStatus(str, PyEnum):
+    """Status of a skill contribution request."""
+    DRAFT = "draft"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class Base(DeclarativeBase):
     """Base class for all models."""
     pass
@@ -615,7 +623,6 @@ class Skill(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     slug: Mapped[str] = mapped_column(String(200), nullable=False, unique=True, index=True)
-    description: Mapped[Optional[str]] = mapped_column(Text)
     scope_type: Mapped[str] = mapped_column(
         String(20), default="global",
         comment="Scope type: global, project, department, team",
@@ -632,6 +639,10 @@ class Skill(Base):
         server_default="active",
         nullable=False,
     )
+    is_system: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false",
+        comment="True for skills seeded from source code. Immutable via API.",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -641,9 +652,15 @@ class Skill(Base):
 
     # Relationships
     departments: Mapped[list["SkillDepartment"]] = relationship(
-        back_populates="skill", cascade="all, delete-orphan"
+        "SkillDepartment",
+        back_populates="skill",
+        cascade="all, delete-orphan",
+        lazy="selectin",
     )
     versions: Mapped[list["SkillVersion"]] = relationship(
+        back_populates="skill", cascade="all, delete-orphan"
+    )
+    contributions: Mapped[list["SkillContribution"]] = relationship(
         back_populates="skill", cascade="all, delete-orphan"
     )
 
@@ -697,6 +714,7 @@ class SkillVersion(Base):
     __table_args__ = (
         Index("ix_skill_versions_skill_id", "skill_id"),
     )
+
 
 
 # ---------------------------------------------------------------------------
@@ -847,3 +865,63 @@ class EmbeddingJob(Base):
     __table_args__ = (
         Index("ix_embedding_jobs_status", "status", "created_at"),
     )
+
+
+# Skill Contributions — Pull Request style workflow
+# ---------------------------------------------------------------------------
+
+class SkillContribution(Base):
+    """
+    A request to create a new skill or update an existing one.
+    Acts as a 'Pull Request' where files are stored in a temporary path
+    until approved by an admin.
+    """
+    __tablename__ = "skill_contributions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    skill_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("skills.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    contributor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE")
+    )
+    base_version: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        comment="Version number this contribution was forked from. Null for new skills.",
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default=SkillContributionStatus.DRAFT.value,
+        index=True
+    )
+    scope_type: Mapped[str] = mapped_column(
+        String(20), default="global",
+        comment="Scope type for NEW skills: global or department",
+    )
+    scope_ids: Mapped[Optional[list]] = mapped_column(
+        JSONB, nullable=True,
+        comment="List of Department IDs if scope_type is department",
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    storage_path: Mapped[Optional[str]] = mapped_column(
+        String(1000),
+        comment="MinIO prefix for this contribution's files, e.g. 'skill-contributions/{id}/'",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    skill: Mapped[Optional["Skill"]] = relationship(back_populates="contributions")
+    contributor: Mapped["Employee"] = relationship()
+
+    __table_args__ = (
+        Index("ix_skill_contributions_contributor_id", "contributor_id"),
+        Index("ix_skill_contributions_status", "status"),
+    )
+

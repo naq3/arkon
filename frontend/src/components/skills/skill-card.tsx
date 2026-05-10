@@ -17,6 +17,7 @@ export type Skill = {
   status: string;
   scope_type: string;
   scope_id: string | null;
+  is_system: boolean;
   updated_at: string;
 };
 
@@ -33,7 +34,7 @@ export function SkillCard({
   onEdit,
   onClick
 }: SkillCardProps) {
-  const { hasPermission } = useAuth();
+  const { canAccess, hasPermission } = useAuth();
   const dateStr = (() => {
     const d = new Date(skill.updated_at);
     return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
@@ -108,7 +109,7 @@ export function SkillCard({
           >
             Details
           </Button>
-          {hasPermission("skills.edit") && (
+          {canAccess("skill", "edit") && (
             <Button
               variant="ghost"
               size="sm"
@@ -119,7 +120,7 @@ export function SkillCard({
               Edit
             </Button>
           )}
-          {hasPermission("skills.delete") && (
+          {canAccess("skill", "delete") && (
             <Button
               variant="ghost"
               size="sm"

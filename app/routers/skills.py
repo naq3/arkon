@@ -23,13 +23,18 @@ from app.services.skill_service import SkillService
 
 router = APIRouter()
 
+
+def _assert_not_system(skill: Skill) -> None:
+    if skill.is_system:
+        raise HTTPException(403, "System skills are read-only and cannot be modified or deleted")
+
+
 # --- Pydantic Models ---
 
 class SkillResponse(BaseModel):
     id: uuid.UUID
     name: str
     slug: str
-    description: Optional[str]
     department_ids: List[uuid.UUID] = []
     department_names: List[str] = []
     current_version: int
@@ -37,6 +42,7 @@ class SkillResponse(BaseModel):
     status: str
     scope_type: str = "global"
     scope_id: Optional[uuid.UUID] = None
+    is_system: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -74,7 +80,6 @@ class SkillBulkVisibilityRequest(BaseModel):
 
 class SkillUpdateRequest(BaseModel):
     name: Optional[str] = None
-    description: Optional[str] = None
     department_ids: Optional[List[uuid.UUID]] = None
     scope_type: Optional[str] = None
     scope_id: Optional[uuid.UUID] = None
@@ -112,9 +117,23 @@ async def upload_skills(
             # Or just deny. Let's deny for now to be safe.
             raise HTTPException(403, "You do not have permission to create global skills")
 
+    if user.role != "admin":
+        # Create contributions instead of direct skills
+        results = []
+        for file in files:
+            contribution = await SkillService.create_contribution_from_zip(db, file, user)
+            results.append({
+                "name": file.filename, 
+                "status": "contribution_pending", 
+                "contribution_id": str(contribution.id),
+                "message": "Submitted contribution for review"
+            })
+        return {"results": results, "message": "Skills submitted for review."}
+    logger.info(f"[Router] Uploading skills for user {department_ids}")
     results = await SkillService.upload_skills(
         db, files, department_ids, scope_type, scope_id, force, user.id
     )
+    logger.info(f"[Router] Skills uploaded successfully: {results}")
     return {"results": results}
 
 
@@ -129,6 +148,18 @@ async def reupload_skill(
     skill = await SkillService.get_skill(db, slug)
     if not await can_access_skill(db, user, skill, "create"):
         raise HTTPException(status_code=403, detail="Access denied")
+    _assert_not_system(skill)
+
+    if user.role != "admin":
+        # Create contribution instead of direct update
+        contribution = await SkillService.create_contribution_from_zip(
+            db, file, user, skill_id=skill.id, base_version=skill.current_version
+        )
+        return {
+            "status": "contribution_pending", 
+            "contribution_id": str(contribution.id),
+            "message": "Update submitted for review."
+        }
 
     result = await SkillService.reupload_skill(db, slug, file, user.id)
     return result
@@ -159,7 +190,6 @@ async def list_skills(
     """List and filter skills available in the system."""
     # --- Scope filtering ---
     needs_filter, allowed_depts = build_skill_filter(user, "read")
-    
     # If allowed_depts is None and needs_filter is True, it means NO permission
     if needs_filter and allowed_depts is None:
         return {"items": [], "total": 0}
@@ -174,75 +204,21 @@ async def list_skills(
     )
     items = []
     for s in skills:
-        resp = SkillResponse.model_validate(s)
-        resp.department_ids = [sd.department_id for sd in s.departments]
-        resp.department_names = [sd.department.name for sd in s.departments]
-        items.append(resp)
+        try:
+            resp = SkillResponse.model_validate(s)
+            # Ensure departments are loaded and safe to access
+            if s.departments:
+                resp.department_ids = [sd.department_id for sd in s.departments]
+                resp.department_names = [
+                    sd.department.name for sd in s.departments if sd.department
+                ]
+            items.append(resp)
+        except Exception as e:
+            logger.error(f"Error serializing skill {s.id}: {e}")
+            # Skip corrupted skill record instead of crashing the whole request
+            continue
+
     return {"items": items, "total": total}
-
-
-@router.delete("/skills/bulk")
-async def bulk_delete_skills(
-    req: SkillDeleteRequest,
-    db: AsyncSession = Depends(get_db),
-    user: Employee = Depends(get_current_user),
-):
-    """Delete multiple skills at once."""
-    if not req.ids:
-        return {"message": "No skills selected"}
-        
-    # Check each skill
-    for skill_id in req.ids:
-        skill = await db.get(Skill, skill_id)
-        if not skill:
-            continue
-        if not await can_access_skill(db, user, skill, "delete"):
-            raise HTTPException(403, f"Access denied for skill {skill.name}")
-
-    count = await SkillService.bulk_delete_skills(db, req.ids)
-    return {"message": f"Queued {count} skills for deletion"}
-
-
-
-
-@router.post("/skills/bulk/department")
-async def bulk_change_visibility(
-    req: SkillBulkVisibilityRequest,
-    db: AsyncSession = Depends(get_db),
-    user: Employee = Depends(get_current_user),
-):
-    """Change visibility/scope for multiple skills at once."""
-    if not req.skill_ids:
-        return {"message": "No skills provided"}
-    
-    # Check access to all skills
-    for skill_id in req.skill_ids:
-        skill = await db.get(Skill, skill_id)
-        if not skill:
-            continue
-        if not await can_access_skill(db, user, skill, "edit"):
-            raise HTTPException(403, f"Access denied for skill {skill.name}")
-
-    # Handle legacy department_id if scope_type is not provided
-    effective_scope_type = req.scope_type
-    effective_scope_id = req.scope_id
-    
-    if not effective_scope_type and req.department_id:
-        effective_scope_type = "department"
-        effective_scope_id = req.department_id
-
-    # Scope validation for new scope
-    perms = _get_user_permissions(user)
-    if user.role != "admin" and "skill:edit:all" not in perms:
-        if effective_scope_type == "department" and effective_scope_id != user.department_id:
-            raise HTTPException(403, "You can only assign skills to your own department")
-        if effective_scope_type == "global":
-            raise HTTPException(403, "You do not have permission to make skills global")
-
-    count = await SkillService.bulk_change_scope(
-        db, req.skill_ids, effective_scope_type, effective_scope_id
-    )
-    return {"updated": count, "message": f"Updated visibility for {count} skills"}
 
 
 
@@ -363,10 +339,65 @@ async def get_skill_file_content(
     logger.info(f"[Debug] Fetching content: skill_id={skill_id}, version={version}, prefix={prefix}, path={path}, full_path={full_path}")
     
     try:
-        content_bytes = storage_service.download_file(full_path)
-        return {"content": content_bytes.decode("utf-8", errors="ignore")}
+        # Helper to clean path parts
+        def join_paths(*parts):
+            res = ""
+            for p in parts:
+                if not p: 
+                    continue
+                p = p.strip("/")
+                if not p: 
+                    continue
+                res = f"{res}/{p}" if res else p
+            return res
+
+        # Potential base prefixes to try
+        base_prefix = prefix.rstrip("/")
+        alt_prefix = base_prefix
+        if not base_prefix.endswith("/content"):
+            alt_prefix = f"{base_prefix}/content"
+        
+        # Potential paths to try
+        paths_to_try = [path]
+        if "/" in path:
+            paths_to_try.append("/".join(path.split("/")[1:]))
+        
+        # Unique combinations of (prefix, path)
+        combinations = []
+        for pfx in [base_prefix, alt_prefix]:
+            for pth in paths_to_try:
+                full = join_paths(pfx, pth)
+                if full not in [c[0] for c in combinations]:
+                    combinations.append((full, pth))
+
+        logger.info(f"[Debug] Attempting to find skill file. Combinations: {[c[0] for c in combinations]}")
+
+        for full_p, pth in combinations:
+            try:
+                content_bytes = storage_service.download_file(full_p)
+                logger.info(f"[Debug] Found file at: {full_p}")
+                return {"content": content_bytes.decode("utf-8", errors="ignore")}
+            except Exception:
+                continue
+
+        # If all fail, list objects to find it (Fuzzy match)
+        logger.info(f"[Debug] All standard paths failed, listing objects to find match for: {path}")
+        from app.config import settings
+        # Use client directly as StorageService doesn't have list_objects
+        objects = storage_service.client.list_objects(settings.minio_bucket, prefix=prefix, recursive=True)
+        target_suffix = path.split("/")[-1]
+        for obj in objects:
+            if obj.object_name.endswith(path) or (obj.object_name.endswith(target_suffix) and path in obj.object_name):
+                logger.info(f"[Debug] Found fuzzy match: {obj.object_name}")
+                content_bytes = storage_service.download_file(obj.object_name)
+                return {"content": content_bytes.decode("utf-8", errors="ignore")}
+
+        raise HTTPException(status_code=404, detail=f"File {path} not found in skill storage.")
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"[Debug] Failed to read skill file {full_path}: {e}")
+        logger.error(f"[Debug] Failed to read skill file {path}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to read file content: {str(e)}")
 
 
@@ -413,6 +444,7 @@ async def set_latest_version(
     skill = await SkillService.get_skill(db, slug)
     if not await can_access_skill(db, user, skill, "edit"):
         raise HTTPException(status_code=403, detail="Access denied")
+    _assert_not_system(skill)
 
     skill = await SkillService.set_latest_version(db, slug, version)
     return {"message": f"Version {version} set as latest", "current_version": skill.current_version}
@@ -428,6 +460,7 @@ async def delete_skill(
     skill = await SkillService.get_skill(db, slug)
     if not await can_access_skill(db, user, skill, "delete"):
         raise HTTPException(status_code=403, detail="Access denied")
+    _assert_not_system(skill)
 
     await SkillService.delete_skill(db, slug)
     return {"message": "Skill marked for deletion"}
@@ -444,6 +477,7 @@ async def update_skill(
     skill = await SkillService.get_skill(db, slug)
     if not await can_access_skill(db, user, skill, "edit"):
         raise HTTPException(status_code=403, detail="Access denied")
+    _assert_not_system(skill)
 
     # Scope validation for new department/scope
     perms = _get_user_permissions(user)

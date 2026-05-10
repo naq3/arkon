@@ -16,6 +16,7 @@ from typing import Optional
 from arq import cron
 from arq.connections import ArqRedis, RedisSettings, create_pool
 from loguru import logger
+from sqlalchemy import select
 
 from app.config import settings
 
@@ -399,24 +400,15 @@ async def ingest_skill_task(ctx: dict, skill_id: str, version_id: str, file_path
                 return
 
             import asyncio
-            import hashlib
 
             from app.services.kb_service import _guess_content_type
 
-            # 1. Stream Hash calculation
-            sha256_hash = hashlib.sha256()
-            with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    sha256_hash.update(chunk)
-            file_hash = sha256_hash.hexdigest()
-
-            # 2. Unzip with streaming, security checks, and concurrent uploads
+            # 1. Unzip with streaming, security checks, and concurrent uploads
             MAX_UNCOMPRESSED_SIZE = 10 * 1024 * 1024  # 10 MB
             MAX_FILE_COUNT = 100
 
             total_size = 0
             file_count = 0
-            readme_content = None
 
             upload_tasks = []
             semaphore = asyncio.Semaphore(10)
@@ -457,8 +449,6 @@ async def ingest_skill_task(ctx: dict, skill_id: str, version_id: str, file_path
                     if filename.lower() == target_readme or filename.lower().endswith("/skill.md"):
                         with zf.open(member) as f:
                             content = f.read()
-                            readme_content = content.decode("utf-8", errors="ignore")
-                            logger.info(f"Found SKILL.md in {filename}")
                         
                         storage_service.upload_file(
                             object_name=object_name,
@@ -473,18 +463,19 @@ async def ingest_skill_task(ctx: dict, skill_id: str, version_id: str, file_path
             if upload_tasks:
                 await asyncio.gather(*upload_tasks)
 
-            # 3. Update DB with extracted metadata
-            if readme_content:
-                skill.description = readme_content
+            # 3. Calculate content-based hash (consistent with contribution workflow)
+            storage_path = f"skills/{skill_id}/versions/{version.version_number}/content/"
+            file_hash = storage_service.calculate_prefix_hash(storage_path)
 
+            # 4. Update DB with extracted metadata
 
             skill.version_hash = file_hash
             skill.current_version = version.version_number
-            skill.storage_path = f"skills/{skill_id}/versions/{version.version_number}/content/"
+            skill.storage_path = storage_path
             skill.status = "active"
             
             version.version_hash = file_hash
-            version.storage_path = skill.storage_path
+            version.storage_path = storage_path
             
             await session.commit()
             logger.success(f"Skill {skill_name} version {version.version_number} processed successfully")
@@ -522,16 +513,29 @@ async def delete_skill_task(ctx: dict, skill_id: str):
             return
 
         try:
-            # 1. Delete files from MinIO (prefix: skills/{skill_id}/)
+            from sqlalchemy.orm import selectinload
+            # 1. Fetch skill with contributions to get their storage paths
+            stmt = select(Skill).where(Skill.id == sid).options(selectinload(Skill.contributions))
+            res = await session.execute(stmt)
+            skill = res.scalars().first()
+            if not skill:
+                return
+
+            # 2. Delete files from MinIO for the skill itself
             prefix = f"skills/{skill_id}/"
             storage_service.delete_prefix(prefix)
             
-            # 2. Delete skill from DB (cascades to SkillVersion if configured, 
-            # but let's be explicit if needed or trust the model relationship)
+            # 3. Delete files for all associated contributions
+            for contrib in skill.contributions:
+                if contrib.storage_path:
+                    logger.info(f"Deleting storage for contribution {contrib.id}: {contrib.storage_path}")
+                    storage_service.delete_prefix(contrib.storage_path)
+
+            # 4. Delete skill from DB (cascades to SkillVersion and SkillContribution DB rows)
             await session.delete(skill)
             await session.commit()
             
-            logger.success(f"Skill {skill_id} and all assets deleted successfully")
+            logger.success(f"Skill {skill_id} and all related assets (versions, contributions) deleted successfully")
 
         except Exception as e:
             logger.exception(f"Failed to delete skill {skill_id}: {e}")

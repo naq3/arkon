@@ -21,6 +21,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SkillFileExplorer } from "@/components/skills/skill-file-explorer";
+import { SkillContributeDialog as ContributeDialog } from "@/components/skills/skill-contribute-dialog";
+import { SkillEditor } from "@/components/skills/skill-editor";
+import { PendingContributionsSidebar, PendingContribution } from "@/components/skills/pending-contributions-sidebar";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface SkillVersion {
   version_number: number;
@@ -31,7 +35,7 @@ interface SkillVersion {
 export default function SkillDetailPage() {
   const { slug } = useParams();
   const router = useRouter();
-  const { canAccess } = useAuth();
+  const { canAccess, hasPermission } = useAuth();
   const [skill, setSkill] = useState<Skill | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -39,6 +43,9 @@ export default function SkillDetailPage() {
   const [versions, setVersions] = useState<SkillVersion[]>([]);
   const [viewingVersion, setViewingVersion] = useState<number | null>(null);
   const [isSettingLatest, setIsSettingLatest] = useState(false);
+  const [activeContributionId, setActiveContributionId] = useState<string | null>(null);
+  const [reviewContributionId, setReviewContributionId] = useState<string | null>(null);
+  const [pendingContributions, setPendingContributions] = useState<PendingContribution[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -136,6 +143,49 @@ export default function SkillDetailPage() {
     }
   };
 
+  const handleSubmitContribution = async () => {
+    if (!activeContributionId) return;
+    if (!confirm("Are you sure you want to submit this contribution for review?")) return;
+    
+    try {
+      await api(`/api/skill-contributions/${activeContributionId}/submit`, { method: "POST" });
+      alert("Contribution submitted successfully!");
+      setActiveContributionId(null);
+      window.location.reload();
+    } catch (err) {
+      console.error("Failed to submit contribution:", err);
+      alert("Submit failed: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+  
+  const handleApprove = async (id: string) => {
+    if (!confirm("Are you sure you want to APPROVE and MERGE this contribution?")) return;
+    try {
+      await api(`/api/skill-contributions/${id}/approve`, { method: "POST" });
+      alert("Contribution approved and merged successfully!");
+      setReviewContributionId(null);
+      window.location.reload(); // Reload to see changes
+    } catch (err) {
+      alert("Approval failed: " + (err instanceof Error ? err.message : "Unknown error"));
+      setReviewContributionId(null);
+      setPendingContributions(prev => prev.filter(c => c.id !== id));
+    }
+  };
+
+  const handleReject = async (id: string) => {
+    if (!confirm("Are you sure you want to REJECT this contribution?")) return;
+    try {
+      await api(`/api/skill-contributions/${id}/reject`, { method: "POST" });
+      alert("Contribution rejected.");
+      setReviewContributionId(null);
+      setPendingContributions(prev => prev.filter(c => c.id !== id));
+    } catch (err) {
+      alert("Rejection failed: " + (err instanceof Error ? err.message : "Unknown error"));
+      setReviewContributionId(null);
+      setPendingContributions(prev => prev.filter(c => c.id !== id));
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -196,31 +246,61 @@ export default function SkillDetailPage() {
         </button>
       </div>
 
-      <PageHeader
-        title={skill.name}
-        description={`Version ${skill.current_version} • Updated ${dateStr}`}
-        action={
-          <div className="flex gap-2">
-            {canAccess("skill", "edit") && (
-              <Button variant="outline" size="sm" onClick={() => router.push(`/skills/${slug}/edit`)}>
-                Edit
-              </Button>
-            )}
-            {canAccess("skill", "delete") && (
-              <Button variant="destructive" size="sm" onClick={handleDelete}>
-                Delete
-              </Button>
-            )}
-          </div>
-        }
-      />
-
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
         <div className="lg:col-span-3 space-y-6">
-          <SkillFileExplorer skillId={skill.id} version={viewingVersion} />
+          <SkillFileExplorer 
+            skillId={skill.id} 
+            version={viewingVersion} 
+          />
         </div>
 
         <div className="lg:col-span-1 space-y-6">
+          <div className="flex items-center justify-end w-full gap-3 animate-in fade-in slide-in-from-right-4 duration-500">
+            {!skill.is_system && canAccess("skill", "create") && (
+              <>
+                <div>
+                  <ContributeDialog
+                    skillId={skill.id}
+                    skillName={skill.name}
+                    versions={versions}
+                    onContributionCreated={(id) => setActiveContributionId(id)}
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 px-3 gap-2 font-bold uppercase tracking-wider border-primary/20 hover:bg-primary/5 transition-all whitespace-nowrap"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading}
+                  title="Upload ZIP"
+                >
+                  <span className={cn("material-symbols-outlined text-sm", isUploading && "animate-spin")}>
+                    {isUploading ? "progress_activity" : "publish"}
+                  </span>
+                  <span className="text-[10px]">ZIP</span>
+                </Button>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  className="hidden"
+                  accept=".zip"
+                  onChange={handleZipUpload}
+                />
+              </>
+            )}
+            {!skill.is_system && canAccess("skill", "delete") && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleDelete}
+                className="h-9 w-9 p-0 transition-all shrink-0"
+                title="Delete Skill"
+              >
+                <span className="material-symbols-outlined text-sm">delete</span>
+              </Button>
+            )}
+          </div>
+
           <div className="bg-card rounded-xl border border-border p-8 space-y-8">
             <section>
               <h4 className="text-xs font-bold text-muted-foreground uppercase mb-4 tracking-wider">Status</h4>
@@ -266,7 +346,7 @@ export default function SkillDetailPage() {
                   </SelectContent>
                 </Select>
 
-                  {canAccess("skill", "edit") && viewingVersion !== skill.current_version && (
+                  {!skill.is_system && canAccess("skill", "edit") && viewingVersion !== skill.current_version && (
                     <Button 
                       className="w-full bg-primary text-primary-foreground shadow-sahara font-bold text-[11px] uppercase tracking-wider h-10 animate-in fade-in slide-in-from-top-1"
                       onClick={handleSetLatest}
@@ -278,40 +358,22 @@ export default function SkillDetailPage() {
               </div>
             </section>
 
-            <section>
+            {/* <section>
               <h4 className="text-xs font-bold text-muted-foreground uppercase mb-4 tracking-wider">Access</h4>
               <div className="text-xs font-mono break-all bg-secondary/30 p-4 rounded-xl border border-border text-muted-foreground leading-relaxed">
                 {skill.version_hash || "N/A"}
               </div>
-            </section>
+            </section> */}
 
-            {canAccess("skill", "create") && (
-              <section className="pt-6 border-t border-border/50">
-                <h4 className="text-xs font-bold text-muted-foreground uppercase mb-4 tracking-wider">Update Package</h4>
-                <Button 
-                  variant="outline" 
-                  className="w-full justify-start gap-2 h-10 border-dashed border-primary/30 hover:border-primary hover:bg-primary/5 transition-all text-xs"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploading}
-                >
-                  <span className={cn("material-symbols-outlined text-base", isUploading && "animate-spin")}>
-                    {isUploading ? "progress_activity" : "upload_file"}
-                  </span>
-                  {isUploading ? "Uploading..." : "Upload New ZIP"}
-                </Button>
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  className="hidden" 
-                  accept=".zip"
-                  onChange={handleZipUpload}
-                />
-                <p className="text-[10px] text-muted-foreground/60 mt-2 italic leading-tight">
-                  ZIP filename must be exactly <span className="font-bold text-primary">"{skill.name}.zip"</span>
-                </p>
-              </section>
-            )}
+            {/* Removed Contribution ZIP section from here */}
           </div>
+
+          <PendingContributionsSidebar 
+            skillId={skill.id}
+            onReview={setReviewContributionId}
+            onDataUpdate={setPendingContributions}
+            refreshInterval={15000}
+          />
         </div>
       </div>
 
@@ -337,6 +399,131 @@ export default function SkillDetailPage() {
         .markdown-content tr { background-color: transparent; }
         .markdown-content tr:nth-child(2n) { background-color: rgba(58, 48, 42, 0.02); }
       `}</style>
+
+      {activeContributionId && (
+        <Dialog open onOpenChange={() => setActiveContributionId(null)}>
+          <DialogContent showCloseButton={false} className="!max-w-[98vw] w-[1800px] h-[96vh] p-0 gap-0 overflow-hidden rounded-xl border border-border shadow-2xl flex flex-col fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+            <DialogHeader className="p-4 border-b border-border shrink-0 bg-primary/5">
+              <div className="flex items-center justify-between pr-8">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                    <span className="material-symbols-outlined text-primary">edit_note</span>
+                  </div>
+                  <div>
+                    <DialogTitle className="text-xl font-serif">Editing Contribution</DialogTitle>
+                    <p className="text-xs text-muted-foreground font-manrope">Draft Mode</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button 
+                    id="force-submit-button"
+                    onClick={handleSubmitContribution}
+                    className="h-8 px-4 flex items-center justify-center bg-[#c2652a] text-white rounded-lg font-bold text-xs uppercase tracking-wider hover:opacity-90 shadow-lg transition-all"
+                  >
+                    Contribute
+                  </button>
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={async () => {
+                      if (!confirm("Are you sure you want to delete this draft contribution? This action cannot be undone.")) return;
+                      try {
+                        const { api } = await import("@/lib/api");
+                        await api(`/api/skill-contributions/${activeContributionId}`, { method: "DELETE" });
+                        setActiveContributionId(null);
+                        window.location.reload();
+                      } catch (err) {
+                        console.error("Failed to delete contribution:", err);
+                        alert("Delete failed: " + (err instanceof Error ? err.message : "Unknown error"));
+                      }
+                    }}
+                    className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all"
+                    title="Delete Draft"
+                  >
+                    <span className="material-symbols-outlined text-lg">delete</span>
+                  </Button>
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={() => setActiveContributionId(null)}
+                    className="h-8 w-8 hover:bg-muted transition-all"
+                    title="Close Editor"
+                  >
+                    <span className="material-symbols-outlined text-lg">close</span>
+                  </Button>
+                </div>
+              </div>
+            </DialogHeader>
+            <div className="flex-1 overflow-hidden">
+              <SkillEditor 
+                contributionId={activeContributionId} 
+                mode="edit"
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {reviewContributionId && (
+        <Dialog open onOpenChange={() => setReviewContributionId(null)}>
+          <DialogContent showCloseButton={false} className="!max-w-[98vw] w-[1800px] h-[96vh] p-0 gap-0 overflow-hidden rounded-xl border border-border shadow-2xl flex flex-col fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+            <DialogHeader className="p-4 border-b border-border shrink-0 bg-primary/5">
+              <div className="flex items-center justify-between pr-8">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                    <span className="material-symbols-outlined text-primary">rate_review</span>
+                  </div>
+                  <div>
+                    <DialogTitle className="text-xl font-serif">Review Contribution</DialogTitle>
+                    <p className="text-xs text-muted-foreground font-manrope">
+                      Submitted by <span className="font-bold text-foreground">{pendingContributions.find(c => c.id === reviewContributionId)?.contributor_name || "Unknown"}</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={() => handleReject(reviewContributionId)}
+                    className="h-8 gap-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all"
+                  >
+                    <span className="material-symbols-outlined text-sm">close</span>
+                    Reject
+                  </Button>
+                  <Button 
+                    variant="default" 
+                    size="sm" 
+                    onClick={() => handleApprove(reviewContributionId)}
+                    className="h-8 gap-2 bg-[#c2652a] text-white hover:opacity-90 shadow-lg transition-all font-bold"
+                  >
+                    <span className="material-symbols-outlined text-sm">check_circle</span>
+                    Approve & Merge
+                  </Button>
+                  <div className="w-px h-6 bg-border mx-1" />
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={() => setReviewContributionId(null)}
+                    className="h-8 w-8 hover:bg-muted transition-all"
+                    title="Close Reviewer"
+                  >
+                    <span className="material-symbols-outlined text-lg">close</span>
+                  </Button>
+                </div>
+              </div>
+            </DialogHeader>
+            <div className="flex-1 overflow-hidden">
+              <SkillEditor 
+                contributionId={reviewContributionId} 
+                onStatusChange={() => {
+                  setReviewContributionId(null);
+                  window.location.reload();
+                }}
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

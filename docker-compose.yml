@@ -1,4 +1,3 @@
-version: '3.8'
 
 # Backend image built once, reused by api + workers
 x-backend: &backend
@@ -15,6 +14,8 @@ x-backend: &backend
       condition: service_healthy
     minio:
       condition: service_healthy
+  volumes:
+    - ./temp_uploads:/app/temp_uploads
 
 services:
   # ── Infrastructure ────────────────────────────────────────────

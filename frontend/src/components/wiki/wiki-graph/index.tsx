@@ -12,7 +12,7 @@ import { convexHull, scopeColor, nodeRadius } from "./utils";
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
   loading: () => null,
-});
+}) as any;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ForceGraphInstance = any;
@@ -497,7 +497,7 @@ export function WikiGraph({
         nodeId="id"
         nodeRelSize={1}
         nodeCanvasObject={drawNode}
-        nodePointerAreaPaint={(rawNode, color, ctx) => {
+        nodePointerAreaPaint={(rawNode: object, color: string, ctx: CanvasRenderingContext2D) => {
           const n = rawNode as Node;
           if (n.x === undefined || n.y === undefined) return;
           ctx.fillStyle = color;

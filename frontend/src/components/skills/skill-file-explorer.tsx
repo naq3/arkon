@@ -87,9 +87,7 @@ export function SkillFileExplorer({ skillId, version }: SkillFileExplorerProps) 
     try {
       const query = version ? `?version=${version}` : "";
       const apiUrl = `/api/skills/${skillId}/files${query}`;
-      console.log(`[FileExplorer] Fetching files from: ${apiUrl}`);
       const data = await api<SkillFile[]>(apiUrl);
-      console.log(`[FileExplorer] [DEBUG] setFiles for version: ${version || 'latest'}`);
       setFiles(data);
       setLoadedVersion(version);
       
@@ -116,7 +114,6 @@ export function SkillFileExplorer({ skillId, version }: SkillFileExplorerProps) 
     try {
       const query = version ? `&version=${version}` : "";
       const apiUrl = `/api/skills/${skillId}/files/content?path=${encodeURIComponent(path)}${query}`;
-      console.log(`[FileExplorer] [DEBUG] fetchContent: path=${path}, version=${version || 'latest'}, url=${apiUrl}`);
       const data = await api<{ content: string }>(apiUrl);
       
       // Clean up internal markers and YAML frontmatter
@@ -135,7 +132,6 @@ export function SkillFileExplorer({ skillId, version }: SkillFileExplorerProps) 
   }, [skillId, version]);
 
   useEffect(() => {
-    console.log(`[FileExplorer] [DEBUG] version changed to: ${version || 'latest'}. Clearing state.`);
     setFiles([]);
     setLoadedVersion(undefined); // Mark as not matching any version yet
     setContent(null);
@@ -154,8 +150,11 @@ export function SkillFileExplorer({ skillId, version }: SkillFileExplorerProps) 
     if (selectedPath && files.length > 0 && versionMatches && !loading) {
       const file = files.find(f => f.path === selectedPath);
       if (file?.is_text) {
-        console.log(`[FileExplorer] [DEBUG] useEffect trigger loadContent: ${selectedPath} (version match: ${version || 'latest'})`);
-        loadContent(selectedPath);
+        if (file.size > 2 * 1024 * 1024) { // 2MB limit
+          setContent("__FILE_TOO_LARGE__");
+        } else {
+          loadContent(selectedPath);
+        }
       } else {
         setContent(null);
       }
@@ -235,17 +234,17 @@ export function SkillFileExplorer({ skillId, version }: SkillFileExplorerProps) 
   };
 
   return (
-    <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sahara flex flex-col lg:flex-row h-[750px]">
+    <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sahara flex flex-col lg:flex-row h-[800px]">
       {/* Sidebar - File Tree */}
       <div className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r border-border bg-secondary/5 flex flex-col overflow-hidden shrink-0">
-        <div className="px-5 py-4 border-b border-border bg-secondary/10 flex items-center justify-between">
+        <div className="h-[61px] px-5 border-b border-border bg-secondary/10 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-sm text-primary/70">account_tree</span>
             <h4 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Skill Explorer</h4>
           </div>
-          <span className="text-[10px] tabular-nums font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full">{files.length}</span>
+          
         </div>
-        <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-3 no-scrollbar">
           {loading ? (
             <div className="space-y-3 p-2">
               {[1, 2, 3, 4, 5, 6, 7, 8].map(i => (
@@ -267,7 +266,7 @@ export function SkillFileExplorer({ skillId, version }: SkillFileExplorerProps) 
       <div className="flex-1 flex flex-col bg-background overflow-hidden">
         {selectedPath ? (
           <>
-            <div className="px-6 py-4 border-b border-border bg-muted/5 flex items-center justify-between shrink-0">
+            <div className="h-[61px] px-6 border-b border-border bg-muted/5 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-3 min-w-0">
                 <span className="text-xs font-mono text-foreground font-semibold truncate bg-secondary/30 px-2 py-1 rounded-md border border-border/50">
                   {selectedPath}
@@ -293,7 +292,7 @@ export function SkillFileExplorer({ skillId, version }: SkillFileExplorerProps) 
               </div>
             </div>
             <div className={cn(
-              "flex-1 overflow-y-auto custom-scrollbar",
+              "flex-1 overflow-y-auto no-scrollbar",
               selectedPath?.toLowerCase().endsWith(".md") ? "bg-card/30" : "bg-secondary/5"
             )}>
               {contentLoading ? (
@@ -301,9 +300,19 @@ export function SkillFileExplorer({ skillId, version }: SkillFileExplorerProps) 
                   <span className="material-symbols-outlined animate-spin text-primary/30 text-5xl">progress_activity</span>
                   <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest">Loading content...</p>
                 </div>
-              ) : content ? (
+              ) : content === "__FILE_TOO_LARGE__" ? (
+                <div className="flex flex-col items-center justify-center h-full gap-5 bg-yellow-500/5 text-yellow-600">
+                  <div className="w-20 h-20 rounded-full bg-yellow-500/10 flex items-center justify-center">
+                    <span className="material-symbols-outlined text-5xl">warning</span>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-bold uppercase tracking-widest">File Too Large</p>
+                    <p className="text-xs mt-1 opacity-70">This file exceeds the 2MB preview limit.</p>
+                  </div>
+                </div>
+              ) : content !== null ? (
                 selectedPath.toLowerCase().endsWith(".md") ? (
-                  <div className="p-10 md:p-16 max-w-4xl mx-auto bg-card rounded-2xl my-8 border border-border/50 shadow-sm">
+                  <div className="p-10 md:p-16 max-w-4xl mx-auto">
                     <div className="prose prose-sm dark:prose-invert max-w-none markdown-content">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {content}

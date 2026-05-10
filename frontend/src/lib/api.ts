@@ -63,7 +63,6 @@ export async function api<T = unknown>(
 
   let res: Response;
   const fullUrl = `${API_BASE}${path}`;
-  console.log(`[API] Fetching: ${method} ${fullUrl}`);
   try {
     res = await fetch(fullUrl, config);
   } catch (err) {

@@ -3,6 +3,7 @@
 import { useState, useRef, useMemo, useEffect } from "react";
 import { apiUpload, api, ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -31,6 +32,7 @@ type UploadSkillDialogProps = {
 };
 
 export function UploadSkillDialog({ allDepartments, onUploaded }: UploadSkillDialogProps) {
+  const { canAccess, hasPermission } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [uploadLoading, setUploadLoading] = useState(false);
 
@@ -94,18 +96,20 @@ export function UploadSkillDialog({ allDepartments, onUploaded }: UploadSkillDia
       setIsOpen(open);
       if (!open) resetForm();
     }}>
-      <DialogTrigger
-        render={
-          <Button className="bg-primary text-primary-foreground hover:bg-primary/90 shadow-sahara">
-            <span className="material-symbols-outlined text-base mr-1">upload</span>
-            Upload Skill
-          </Button>
-        }
-      />
+      {(canAccess("skill", "create") ) && (
+        <DialogTrigger
+          render={
+            <Button className="bg-primary text-primary-foreground hover:bg-primary/90 shadow-sahara">
+              <span className="material-symbols-outlined text-base mr-1">upload</span>
+              Upload Skill
+            </Button>
+          }
+        />
+      )}
       <DialogContent className="sm:max-w-[500px]">
         <form onSubmit={handleUpload}>
           <DialogHeader>
-            <DialogTitle className="text-2xl font-serif font-semibold tracking-tight text-foreground">Upload AI Skill</DialogTitle>
+            <DialogTitle className="text-xl font-heading">Upload AI Skill</DialogTitle>
             <DialogDescription className="font-manrope">
               Select one or more ZIP packages containing AI skills.
             </DialogDescription>

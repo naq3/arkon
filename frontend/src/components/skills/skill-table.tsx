@@ -4,6 +4,8 @@ import React from "react";
 import { ScopeBadge } from "@/components/shared/scope-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/auth";
+import { cn } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -68,6 +70,7 @@ export function SkillTable({
   total,
   search,
 }: SkillTableProps) {
+  const { canAccess, hasPermission } = useAuth();
   const [editSkill, setEditSkill] = React.useState<Skill | null>(null);
   const [uploadSkill, setUploadSkill] = React.useState<Skill | null>(null);
   const [searchInput, setSearchInput] = React.useState(search);
@@ -137,8 +140,7 @@ export function SkillTable({
               {skills.map((skill) => (
                 <TableRow
                   key={skill.id}
-                  className="group hover:bg-secondary/30 transition-colors cursor-pointer border-b border-border/40"
-                  onClick={() => onClick(skill.slug)}
+                  className="group hover:bg-secondary/30 transition-colors border-b border-border/40"
                 >
                   {/* Skill Name */}
                   <TableCell>
@@ -146,10 +148,19 @@ export function SkillTable({
                       <div className="w-6 h-6 rounded-md bg-secondary/40 flex items-center justify-center shrink-0 transition-colors group-hover:bg-secondary/60">
                         <span className="material-symbols-outlined text-muted-foreground/40 text-[16px] group-hover:scale-110 transition-transform duration-300">auto_awesome</span>
                       </div>
-                      <div className="flex flex-col min-w-0">
-                        <span className="text-sm font-medium text-foreground truncate max-w-[400px] group-hover:text-primary transition-colors font-manrope">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className="text-sm font-medium text-foreground truncate max-w-[400px] group-hover:text-primary transition-colors font-manrope cursor-pointer hover:underline underline-offset-4 decoration-primary/30"
+                          onClick={() => onClick(skill.slug)}
+                        >
                           {skill.name}
                         </span>
+                        {skill.is_system && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 border border-amber-500/20 shrink-0">
+                            <span className="material-symbols-outlined text-[11px]">lock</span>
+                            System
+                          </span>
+                        )}
                       </div>
                     </div>
                   </TableCell>
@@ -169,10 +180,10 @@ export function SkillTable({
 
                   {/* Department */}
                   <TableCell>
-                    <div className="flex flex-wrap items-center gap-1.5 max-w-[200px]">
+                    <div className="flex items-center gap-1.5 overflow-x-auto max-w-[180px] [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                       {skill.department_names && skill.department_names.length > 0 ? (
                         skill.department_names.map((dept, idx) => (
-                          <div key={idx} className="flex items-center gap-1 text-[10px] text-muted-foreground font-semibold uppercase tracking-wider bg-secondary/30 px-1.5 py-0.5 rounded-md">
+                          <div key={idx} className="flex items-center gap-1 text-[10px] text-muted-foreground font-semibold uppercase tracking-wider bg-secondary/30 px-1.5 py-0.5 rounded-md shrink-0 whitespace-nowrap">
                             <span className="material-symbols-outlined text-[12px]">corporate_fare</span>
                             {dept}
                           </div>
@@ -213,29 +224,31 @@ export function SkillTable({
 
                   {/* Actions */}
                   <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger className="inline-flex items-center justify-center h-8 w-8 rounded-full hover:bg-secondary text-muted-foreground transition-colors focus:outline-none">
-                        <span className="material-symbols-outlined text-lg">more_vert</span>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-40 rounded-xl shadow-xl border-border">
-                        <DropdownMenuItem onClick={() => setUploadSkill(skill)} className="flex items-center gap-2 py-2.5 cursor-pointer">
-                          <span className="material-symbols-outlined text-base text-primary">upload_file</span>
-                          Update skill
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setEditSkill(skill)} className="flex items-center gap-2 py-2.5 cursor-pointer">
-                          <span className="material-symbols-outlined text-base">edit</span>
-                          Edit Skill
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator className="bg-border/50" />
-                        <DropdownMenuItem
-                          onClick={() => onDelete(skill.id, skill.name)}
-                          className="flex items-center gap-2 py-2.5 text-destructive focus:text-destructive cursor-pointer"
-                        >
-                          <span className="material-symbols-outlined text-base">delete</span>
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    {!skill.is_system && (canAccess("skill", "edit") || canAccess("skill", "delete")) && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger className="inline-flex items-center justify-center h-8 w-8 rounded-full hover:bg-secondary text-muted-foreground transition-colors focus:outline-none">
+                          <span className="material-symbols-outlined text-lg">more_vert</span>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-40 rounded-xl shadow-xl border-border">
+                          {canAccess("skill", "edit") && (
+                            <DropdownMenuItem onClick={() => setEditSkill(skill)} className="flex items-center gap-2 py-2.5 cursor-pointer">
+                              <span className="material-symbols-outlined text-base">edit</span>
+                              Edit Skill
+                            </DropdownMenuItem>
+                          )}
+                          {(canAccess("skill", "edit") || canAccess("skill", "delete")) && <DropdownMenuSeparator className="bg-border/50" />}
+                          {canAccess("skill", "delete") && (
+                            <DropdownMenuItem
+                              onClick={() => onDelete(skill.id, skill.name)}
+                              className="flex items-center gap-2 py-2.5 text-destructive focus:text-destructive cursor-pointer"
+                            >
+                              <span className="material-symbols-outlined text-base">delete</span>
+                              Delete
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -279,8 +292,10 @@ function EditSkillDialog({
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
 
+  const isNameValid = /^[a-zA-Z0-9\s\-_À-ỹ]+$/.test(name);
 
   const handleSave = async () => {
+    if (!isNameValid) return;
     setSaving(true);
     setError("");
     try {
@@ -314,9 +329,14 @@ function EditSkillDialog({
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="bg-background rounded-xl h-11"
+              className={cn("bg-background rounded-xl h-11", !isNameValid && "border-destructive focus-visible:ring-destructive")}
               placeholder="e.g. Data Analyst"
             />
+            {!isNameValid && (
+              <p className="text-[11px] text-destructive font-medium animate-in fade-in slide-in-from-top-1">
+                Name contains invalid characters. Use only letters, numbers, spaces, - and _.
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -396,7 +416,7 @@ function EditSkillDialog({
           <div className="flex justify-end gap-2 mt-4">
             <Button variant="ghost" onClick={onClose} className="rounded-xl h-11 px-6">Cancel</Button>
             <Button
-              disabled={saving}
+              disabled={saving || !isNameValid}
               onClick={handleSave}
               className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl h-11 px-8 font-bold shadow-lg shadow-primary/20"
             >
@@ -442,13 +462,10 @@ function UploadVersionDialog({
     const formData = new FormData();
     formData.append("file", file);
 
-    console.log(`[UploadDialog] Starting upload for skill: ${skill.name}, slug: ${skill.slug}`);
     const uploadUrl = `/api/skills/${skill.slug}/reupload`;
-    console.log(`[UploadDialog] Target URL: ${uploadUrl}`);
 
     try {
       await apiUpload(uploadUrl, formData);
-      console.log(`[UploadDialog] Upload successful`);
       onUploaded();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to upload");
@@ -476,7 +493,7 @@ function UploadVersionDialog({
           </div>
 
           <div className="w-full">
-            <Button 
+            <Button
               className="w-full h-12 rounded-xl bg-primary text-primary-foreground font-bold shadow-lg shadow-primary/20 gap-2"
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploading}
@@ -488,10 +505,10 @@ function UploadVersionDialog({
               )}
               {isUploading ? "Uploading..." : "Select ZIP Package"}
             </Button>
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              className="hidden" 
+            <input
+              type="file"
+              ref={fileInputRef}
+              className="hidden"
               accept=".zip"
               onChange={handleUpload}
             />
